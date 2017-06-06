@@ -33,7 +33,7 @@ def callback(lcl, glb):
     return is_solved
 
 
-def eval_model(env, obs_placeholder, epislon_placeholder, stochastic_placeholder,
+def eval_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholder,
                output_actions, sess, samples=1000):
     sum_reward = 0
     for _ in range(samples):
@@ -104,8 +104,10 @@ def main():
     q_values = tf.layers.dense(obs_placeholder, num_actions, name="q_values")
     deterministic_actions = tf.argmax(q_values, axis=1)
 
-    random_actions = tf.random_uniform([dynamic_batch_size], minval=0, maxval=num_actions, dtype=tf.int64)
-    chose_random = tf.random_uniform([dynamic_batch_size], minval=0, maxval=1, dtype=tf.float32) < epsilon_placeholder
+    random_actions = tf.random_uniform([dynamic_batch_size], minval=0, maxval=num_actions,
+                                       dtype=tf.int64)
+    chose_random = tf.random_uniform([dynamic_batch_size], minval=0, maxval=1,
+                                     dtype=tf.float32) < epsilon_placeholder
     stochastic_actions = tf.where(chose_random, random_actions, deterministic_actions)
 
     output_actions = tf.cond(stochastic_placeholder,
@@ -118,7 +120,8 @@ def main():
     states = tf.placeholder(tf.float32, (None,) + env.observation_space.shape, name="states")
     actions = tf.placeholder(tf.int32, [None], name="actions")
     rewards = tf.placeholder(tf.float32, [None], name="rewards")
-    next_states = tf.placeholder(tf.float32, (None,) + env.observation_space.shape, name="next_states")
+    next_states = tf.placeholder(tf.float32, (None,) + env.observation_space.shape,
+                                 name="next_states")
     done_mask = tf.placeholder(tf.float32, [None], name="done_mask")
 
     # q network evaluation
