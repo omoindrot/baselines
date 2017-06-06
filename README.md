@@ -19,6 +19,7 @@
     - then epsilon stays at 2% for 80,000 iterations
     - first reward (first time we solved the problem): usually around 60% epsilon, i.e. ater 8,000 iterations
       - got 30% epsilon once
+    - purely random exploration (only random actions) gets to the reward in 514 steps on average
 
 - curiosity driven exploration
   - 
