@@ -49,9 +49,9 @@ def eval_model(env, obs_placeholder, epislon_placeholder, stochastic_placeholder
             obs, rew, done, _ = env.step(action)
             episode_rew += rew
         sum_reward += episode_rew
-        print(episode_rew)
-        print(count)
-        print()
+        #print(episode_rew)
+        #print(count)
+        #print()
     mean_reward = sum_reward / samples
     print("Mean reward over %d episodes: %f" % (samples, mean_reward))
 
@@ -68,7 +68,8 @@ def enjoy_model(env, act):
         print("Episode rew", episode_rew)
         time.sleep(1)
 
-def main(args):
+#def main(args):
+def main():
     tf.reset_default_graph()
     #args
     lr = 1e-3
@@ -228,8 +229,8 @@ def main(args):
             # TODO: save regularly
 
 
-eval_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholder,
-           output_actions, sess, samples=1000)
+    eval_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholder,
+               output_actions, sess, samples=1000)
 
 
 if __name__ == '__main__':
