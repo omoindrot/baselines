@@ -11,7 +11,9 @@
   
 - standard deep Q learning
   - finds a better strategy (tries to go right at the beginning, which is risky because there are holes below)
-  - average ... of winning
+  - average 80.3% of winning
+    - sometimes dies from not finishing in time
+    - sometimes dies from falling into holes (has to take risks)
   - exploration: greedy epsilon exploration
     - epsilon starts at 100%, goes down to 2% after 20,000 iterations
     - then epsilon stays at 2% for 80,000 iterations
