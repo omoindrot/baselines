@@ -68,6 +68,24 @@ def enjoy_model(env, act):
         print("Episode rew", episode_rew)
         time.sleep(1)
 
+def check_random_model(samples=10):
+    env = gym.make("FrozenLake8x8-v0")
+    total_count = 0
+    for sample in range(samples):
+        found = False
+        count = 0
+        while not found:
+            obs, done = env.reset(), False
+            count += 1
+            while not done:
+                obs, rew, done, _ = env.step(env.action_space.sample())
+            if rew > 0:
+                found = True
+        total_count += count
+    mean_count = total_count / float(samples)
+    print("It took %d random simulations to find the reward on average" % mean_count)
+
+
 #def main(args):
 def main():
     tf.reset_default_graph()
@@ -84,6 +102,12 @@ def main():
     gamma = 0.99
     target_network_update_freq = 500
     grad_norm_clipping = 10
+    visualize = False
+
+    # args for curiosity
+    curiosity = True
+    hidden_phi = 16
+    eta = 1.0  # for scaling intrinsic reward
 
     # Create the environment
     env = gym.make("FrozenLake8x8-v0")
@@ -137,8 +161,42 @@ def main():
     q_next_states = tf.reduce_max(target_q_values, 1)
     q_next_states_masked = q_next_states * (1.0 - done_mask)
 
+    # ----------------
+    # Intrinsic reward
+    phi_t = tf.layers.dense(states, hidden_phi, name="phi/features")                # phi(t)
+    phi_tp1 = tf.layers.dense(states, hidden_phi, reuse=True, name="phi/features")  # phi(t+1)
+
+    #  --------------------------------------------------------
+    # Inverse dynamic loss: predict a given phi(t) and phi(t+1)
+    phi_t_tp1 = tf.concat([phi_t, phi_tp1], axis=1)
+    action_predictions = tf.layers.dense(phi_t_tp1, num_actions, name="phi/logits")
+    inverse_dynamic_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
+            labels=actions, logits=action_predictions)
+    inverse_dynamic_optimizer = tf.train.AdamOptimizer(learning_rate=lr)
+    phi_vars = tf.contrib.framework.get_variables("phi")
+    assert(len(phi_vars) == 4)
+    # TODO: add gradient clipping
+    inverse_dynamic_train_op = inverse_dynamic_optimizer.minimize(inverse_dynamic_loss)
+
+    # --------------------------------------------------
+    # Forward model: predict phi(t+1) given phi(t) and a
+    forward_input = tf.concat([phi_t, tf.one_hot(actions, num_actions)], axis=1)
+    #print("forward_input shape", forward_input.get_shape())
+
+    forward_pred = tf.layers.dense(forward_input, hidden_phi, name="forward")
+    forward_loss = tf.nn.l2_loss(forward_pred - phi_tp1)
+
+    forward_optimizer = tf.train.AdamOptimizer(learning_rate=lr)
+    forward_vars = tf.contrib.framework.get_variables("forward")
+    assert(len(forward_vars) == 2)
+    # TODO: add gradient clipping
+    forward_train_op = forward_optimizer.minimize(forward_loss)
+
+
+    # -------------------------------------------------
     # Compute RHS of bellman equation
-    target = rewards + gamma * q_next_states_masked
+    intrinsic_rewards = 0.5 * eta * tf.reduce_sum(tf.square(forward_pred - phi_tp1), axis=1)
+    target = rewards + intrinsic_rewards + gamma * q_next_states_masked
 
     # Compute the loss
     tf.losses.huber_loss(labels=tf.stop_gradient(target), predictions=q_states_actions)
@@ -172,7 +230,6 @@ def main():
                                  final_p=exploration_final_eps)
 
     # Create the session
-    #sess = tf.Session()
     with tf.Session() as sess:
 
         sess.run(init_op)
@@ -186,23 +243,31 @@ def main():
         saved_mean_reward = None
 
         for t in range(max_timesteps):
+            if visualize:
+                env.render()
+                time.sleep(0.05)
+
             # Update epsilon
             epsilon = exploration.value(t)
 
             # Take action
             feed_dict = {obs_placeholder: np.array(obs).reshape((1,) +  obs.shape),
                          epsilon_placeholder: epsilon,
-                         stochastic_placeholder: True}
+                         stochastic_placeholder: not curiosity}  # no stochasticity for curiosity
             action = sess.run(output_actions, feed_dict)[0]
 
             new_obs, rew, done, _ = env.step(action)
 
             # Store transitions in the replay buffer
+            # TODO: remove replay buffer for curiosity
             replay_buffer.add(obs, action, rew, new_obs, float(done))
             obs = new_obs
 
             episode_rewards[-1] += rew
             if done:
+                if visualize:
+                    env.render()
+                    time.sleep(1)
                 obs = env.reset()
                 episode_rewards.append(0.0)
 
@@ -215,7 +280,11 @@ def main():
                              next_states: next_obs_batch,
                              done_mask: done_mask_batch}
 
-                sess.run(train_op, feed_dict)
+                if curiosity:
+                    irew, _, _, _ = sess.run([intrinsic_rewards,
+                        train_op, inverse_dynamic_train_op, forward_train_op], feed_dict)
+                else:
+                    sess.run(train_op, feed_dict)
 
             if t > learning_starts and t% target_network_update_freq == 0:
                 sess.run(update_target_q)
@@ -232,6 +301,7 @@ def main():
             # TODO: save regularly
 
 
+    print("Evaluating model")
     eval_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholder,
                output_actions, sess, samples=1000)
 
