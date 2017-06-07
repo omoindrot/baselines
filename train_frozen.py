@@ -104,9 +104,9 @@ if True:
     lr = 1e-3
     max_timesteps = 100000
     buffer_size = 50000
-    exploration_fraction = 0.3
-    exploration_final_eps = 0.05
-    train_freq = 5
+    exploration_fraction = 0.2
+    exploration_final_eps = 0.02
+    train_freq = 1
     batch_size = 32
     print_freq = 10
     learning_starts = 1000
@@ -212,7 +212,10 @@ if True:
     # -------------------------------------------------
     # Compute RHS of bellman equation
     intrinsic_rewards = 0.5 * eta * tf.reduce_sum(tf.square(forward_pred - phi_tp1), axis=1)
-    target = rewards + intrinsic_rewards + gamma * q_next_states_masked
+    if curiosity:
+        target = rewards + intrinsic_rewards + gamma * q_next_states_masked
+    else:
+        target = rewards + gamma * q_next_states_masked
 
     # Compute the loss
     tf.losses.huber_loss(labels=tf.stop_gradient(target), predictions=q_states_actions)
