@@ -85,19 +85,30 @@ def check_random_model(samples=10):
     mean_count = total_count / float(samples)
     print("It took %d random simulations to find the reward on average" % mean_count)
 
+MAP = [
+    "SFFFFFFF",
+    "FFFFFFFF",
+    "FFFHFFFF",
+    "FFFFFHFF",
+    "FFFHFFFF",
+    "FHHFFFHF",
+    "FHFFHFHF",
+    "FFFHFFFG"
+]
 
 #def main(args):
-def main():
+#def main():
+if True:
     tf.reset_default_graph()
     #args
     lr = 1e-3
     max_timesteps = 100000
     buffer_size = 50000
-    exploration_fraction = 0.2
-    exploration_final_eps = 0.02
-    train_freq = 1
+    exploration_fraction = 0.3
+    exploration_final_eps = 0.05
+    train_freq = 5
     batch_size = 32
-    print_freq = 1
+    print_freq = 10
     learning_starts = 1000
     gamma = 0.99
     target_network_update_freq = 500
@@ -105,12 +116,17 @@ def main():
     visualize = False
 
     # args for curiosity
-    curiosity = True
+    curiosity = False
     hidden_phi = 16
-    eta = 1.0  # for scaling intrinsic reward
+    eta = 1.0 * (1.0 - gamma)  # for scaling intrinsic reward
+    no_replay_memory = False  # testing without the replay memory
 
     # Create the environment
-    env = gym.make("FrozenLake8x8-v0")
+    #env = gym.make("FrozenLake8x8-v0")
+    from gym.envs.toy_text import FrozenLakeEnv
+
+    env = FrozenLakeEnv(desc=MAP, is_slippery=True)
+    env = gym.wrappers.TimeLimit(env, max_episode_steps=200)
     wrapper = MyWrapper()
     env = wrapper(env)
     num_actions = env.action_space.n
@@ -230,7 +246,9 @@ def main():
                                  final_p=exploration_final_eps)
 
     # Create the session
-    with tf.Session() as sess:
+    sess = tf.Session()
+    #with tf.Session() as sess:
+    if True:
 
         sess.run(init_op)
         sess.run(update_target_q)
@@ -252,8 +270,8 @@ def main():
 
             # Take action
             feed_dict = {obs_placeholder: np.array(obs).reshape((1,) +  obs.shape),
-                         epsilon_placeholder: epsilon,
-                         stochastic_placeholder: not curiosity}  # no stochasticity for curiosity
+                         epsilon_placeholder: epsilon,  # TODO: hardcoded
+                         stochastic_placeholder: True}  # no stochasticity for curiosity
             action = sess.run(output_actions, feed_dict)[0]
 
             new_obs, rew, done, _ = env.step(action)
@@ -265,14 +283,14 @@ def main():
 
             episode_rewards[-1] += rew
             if done:
-                if visualize:
-                    env.render()
-                    time.sleep(1)
                 obs = env.reset()
                 episode_rewards.append(0.0)
 
             if t > learning_starts and t % train_freq == 0:
-                experience = replay_buffer.sample(batch_size)
+                if no_replay_memory:
+                    experience = replay_buffer.give_last(1)
+                else:
+                    experience = replay_buffer.sample(batch_size)
                 obs_batch, actions_batch, rew_batch, next_obs_batch, done_mask_batch = experience
                 feed_dict = {states: obs_batch,
                              actions: actions_batch,
@@ -283,6 +301,7 @@ def main():
                 if curiosity:
                     irew, _, _, _ = sess.run([intrinsic_rewards,
                         train_op, inverse_dynamic_train_op, forward_train_op], feed_dict)
+                    print("Intrinsic reward:", irew[0])
                 else:
                     sess.run(train_op, feed_dict)
 
@@ -298,6 +317,9 @@ def main():
                 logger.record_tabular("% time spent exploring", int(100 * epsilon))
                 logger.dump_tabular()
 
+            if done and visualize:
+                time.sleep(1.0)
+
             # TODO: save regularly
 
 
@@ -306,5 +328,5 @@ def main():
                output_actions, sess, samples=1000)
 
 
-if __name__ == '__main__':
-    main()
+#if __name__ == '__main__':
+    #main()
