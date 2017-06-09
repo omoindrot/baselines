@@ -13,7 +13,6 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--gamma', type=float, default=1.0, help="Gamma for the agent")
 parser.add_argument('--learning_rate', type=float, default=1e-3, help="learning rate")
 parser.add_argument('--max_timesteps', type=int, default=100000, help="Total number of timesteps")
-parser.add_argument('--replay_memory', action='store_true', help="Use replay memory")
 parser.add_argument('--buffer_size', type=int, default=50000, help="Buffer size for replay memory")
 parser.add_argument('--initial_epsilon', type=float, default=1.0, help="Initial epsilon")
 parser.add_argument('--exploration_fraction', type=float, default=0.1, help="Time spent exploring")
@@ -94,9 +93,12 @@ if True:
 
     # -------------------------------------
     # Model: gets actions with input states
+    def q_function(states_ph, num_actions, reuse=False, scope="q_values"):
+        hidden = tf.layers.dense(states_ph, 64, tf.nn.relu, reuse=reuse, name=scope+"/fc1")
+        return tf.layers.dense(hidden, num_actions, reuse=reuse, name=scope+"/fc2")
+
     # q_values has shape (None, num_actions) and contains q(s, a) for the input batch of states
-    hidden_layer = tf.layers.dense(obs_placeholder, 64, name="q_values/fc1")
-    q_values = tf.layers.dense(hidden_layer, num_actions, name="q_values/fc2")
+    q_values = q_function(obs_placeholder, num_actions, reuse=False, scope="q_values")
     deterministic_actions = tf.argmax(q_values, axis=1)
 
     random_actions = tf.random_uniform([dynamic_batch_size], minval=0, maxval=num_actions,
@@ -110,7 +112,7 @@ if True:
                              lambda: deterministic_actions)
 
     # -------------------------------------
-    # Training: given batch of s, a, r, s'
+    # TRAINING: given batch of s, a, r, s'
     #           update parameters
     states = tf.placeholder(tf.float32, (None,) + env.observation_space.shape, name="states")
     actions = tf.placeholder(tf.int32, [None], name="actions")
@@ -120,11 +122,9 @@ if True:
     done_mask = tf.placeholder(tf.float32, [None], name="done_mask")
 
     # q network evaluation
-    hidden_bis = tf.layers.dense(states, 64, reuse=True, name="q_values/fc1")
-    q_states = tf.layers.dense(hidden_bis, num_actions, reuse=True, name="q_values/fc2")
+    q_states = q_function(states, num_actions, reuse=True, scope="q_values")
 
-    target_hidden = tf.layers.dense(next_states, 64, name="target_q_values/fc1")
-    target_q_values = tf.layers.dense(target_hidden, num_actions, name="target_q_values/fc2")
+    target_q_values = q_function(next_states, num_actions, reuse=False, scope="target_q_values")
 
     # q(s,a) which were selected
     # TODO: use tf.gather_nd(q_states, tf.stack((tf.range(q_states.shape[0]), actions), 1) ?
@@ -132,8 +132,7 @@ if True:
 
     # Double q learning
     # We select the best a' given the online network and estimate it with target network
-    q_tp1_hidden = tf.layers.dense(next_states, 64, reuse=True, name="q_values/fc1")
-    q_tp1_online = tf.layers.dense(q_tp1_hidden, num_actions, reuse=True, name="q_values/fc2")
+    q_tp1_online = q_function(next_states, num_actions, reuse=True, scope="q_values")
     q_tp1_best_using_online_net = tf.arg_max(q_tp1_online, 1)
     q_next_states = tf.reduce_sum(target_q_values * tf.one_hot(q_tp1_best_using_online_net,
                                                                num_actions),
@@ -147,9 +146,10 @@ if True:
     target = rewards + args.gamma * q_next_states_masked
 
     # Compute the loss
-    tf.losses.huber_loss(labels=tf.stop_gradient(target), predictions=q_states_actions)
-
-    loss = tf.losses.get_total_loss()
+    #loss = tf.losses.huber_loss(labels=tf.stop_gradient(target), predictions=q_states_actions)
+    diff = tf.stop_gradient(target) - q_states_actions
+    errors = tf.where(tf.abs(diff) < 1.0, tf.square(diff) * 0.5, tf.abs(diff) - 0.5)
+    loss = tf.reduce_mean(errors)
 
     optimizer = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
     q_network_vars = tf.contrib.framework.get_variables('q_values')
@@ -157,14 +157,12 @@ if True:
     assert(len(q_network_vars) == 4)
     assert(len(target_q_network_vars) == 4)
 
-    gradients, variables = zip(*optimizer.compute_gradients(loss, var_list=q_network_vars))
-    assert(len(gradients) == 4)
-    assert(len(variables) == 4)
+    grads_and_vars = optimizer.compute_gradients(loss, var_list=q_network_vars)
 
-    clipped_gradients, global_norm = tf.clip_by_global_norm(gradients, args.grad_norm_clipping)
-    train_op = optimizer.apply_gradients(zip(clipped_gradients, variables))
-
-    tf.summary.scalar("global_gradient_norm", global_norm)
+    clipped_grads_and_vars = [(tf.clip_by_norm(g, args.grad_norm_clipping), v)
+                              for g, v in grads_and_vars]
+    assert(len(clipped_grads_and_vars) == 4)
+    train_op = optimizer.apply_gradients(clipped_grads_and_vars)
 
     # Update target Q network
     update_target_q_ops = []
@@ -174,6 +172,8 @@ if True:
     update_target_q = tf.group(*update_target_q_ops)
 
     init_op = tf.global_variables_initializer()
+
+    tf.get_default_graph().finalize()
 
 
     # -------------------------------------
@@ -203,16 +203,13 @@ if True:
         saved_mean_reward = None
 
         for t in range(args.max_timesteps):
-            if args.visualize:
-                env.render()
-                time.sleep(0.05)
 
             # Update epsilon
             epsilon = exploration.value(t)
 
             # Take action
             feed_dict = {obs_placeholder: np.array(obs).reshape((1,) +  obs.shape),
-                         epsilon_placeholder: epsilon,  # TODO: hardcoded
+                         epsilon_placeholder: epsilon,
                          stochastic_placeholder: True}
             action = sess.run(output_actions, feed_dict)[0]
 
@@ -228,20 +225,19 @@ if True:
                 episode_rewards.append(0.0)
 
             if t > args.learning_starts and t % args.train_freq == 0:
-                if not args.replay_memory:
-                    experience = replay_buffer.give_last(1)
-                else:
-                    experience = replay_buffer.sample(args.batch_size)
+                experience = replay_buffer.sample(args.batch_size)
                 obs_batch, actions_batch, rew_batch, next_obs_batch, done_mask_batch = experience
+                assert(obs_batch.shape == (args.batch_size, 4))
+                assert(next_obs_batch.shape == (args.batch_size, 4))
                 feed_dict = {states: obs_batch,
                              actions: actions_batch,
                              rewards: rew_batch,
                              next_states: next_obs_batch,
                              done_mask: done_mask_batch}
 
-                sess.run(train_op, feed_dict)
+                _, loss_val = sess.run([train_op, loss], feed_dict)
 
-            if t > args.learning_starts and t% args.target_network_update_freq == 0:
+            if t > args.learning_starts and t % args.target_network_update_freq == 0:
                 sess.run(update_target_q)
 
             mean_100ep_reward = np.mean(episode_rewards[-100:])
