@@ -29,3 +29,9 @@
 
 
 
+## TODO
+- add optimism in Q network
+  - initialize last bias to 1? to 1 / (1 - gamma) ?
+- change the way we apply the intrinsic memory
+  - during training vs. at play time
+  - compare both results
