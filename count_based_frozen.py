@@ -25,9 +25,8 @@ parser.add_argument('--learning_starts', type=int, default=1000, help="Start tra
 parser.add_argument('--target_network_update_freq', type=int, default=500, help="Update target net")
 parser.add_argument('--grad_norm_clipping', type=float, default=10.0, help="Clip gradients")
 parser.add_argument('--visualize', action='store_true', help="Render environment")
-parser.add_argument('--curiosity', action='store_true', help="Activate curiosity module")
 parser.add_argument('--hidden_phi', type=int, default=16, help="Hidden dimension for phi")
-parser.add_argument('--eta', type=int, default=0.01, help="Coefficient for intrinsic reward")
+parser.add_argument('--eta', type=float, default=0.01, help="Coefficient for intrinsic reward")
 
 args = parser.parse_args()
 
@@ -162,6 +161,16 @@ if True:
                              lambda: stochastic_actions,
                              lambda: deterministic_actions)
 
+    # Create counts
+    counts = tf.Variable(np.zeros(64), dtype=tf.int64, name="counts")
+    print("counts", counts.get_shape())
+
+    # Update counts
+    new_counts = tf.cast(tf.reduce_sum(obs_placeholder, axis=0), dtype=tf.int64)
+    print("new_counts", new_counts.get_shape())
+    update_counts = tf.assign_add(counts, new_counts)
+
+
     # -------------------------------------
     # Training: given batch of s, a, r, s'
     #           update parameters
@@ -185,47 +194,23 @@ if True:
     q_next_states = tf.reduce_max(target_q_values, 1)
     q_next_states_masked = q_next_states * (1.0 - done_mask)
 
-    # ----------------
-    # Intrinsic reward
-    phi_t = tf.layers.dense(states, args.hidden_phi, name="phi/features")                # phi(t)
-    phi_tp1 = tf.layers.dense(states, args.hidden_phi, reuse=True, name="phi/features")  # phi(t+1)
 
-    #  --------------------------------------------------------
-    # Inverse dynamic loss: predict a given phi(t) and phi(t+1)
-    phi_t_tp1 = tf.concat([phi_t, phi_tp1], axis=1)
-    action_predictions = tf.layers.dense(phi_t_tp1, num_actions, name="phi/logits")
-    inverse_dynamic_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
-            labels=actions, logits=action_predictions)
-    inverse_dynamic_optimizer = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
-    phi_vars = tf.contrib.framework.get_variables("phi")
-    assert(len(phi_vars) == 4)
-    # TODO: add gradient clipping
-    inverse_dynamic_train_op = inverse_dynamic_optimizer.minimize(inverse_dynamic_loss, var_list=phi_vars)
-
-    # --------------------------------------------------
-    # Forward model: predict phi(t+1) given phi(t) and a
-    forward_input = tf.concat([phi_t, tf.one_hot(actions, num_actions)], axis=1)
-    #print("forward_input shape", forward_input.get_shape())
-
-    forward_pred = tf.layers.dense(forward_input, args.hidden_phi, name="forward")
-    forward_loss = tf.nn.l2_loss(forward_pred - phi_tp1)
-
-    forward_optimizer = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
-    forward_vars = tf.contrib.framework.get_variables("forward")
-    assert(len(forward_vars) == 2)
-    # TODO: add gradient clipping
-    forward_train_op = forward_optimizer.minimize(forward_loss, var_list=forward_vars)
-
+    # Count-based reward
+    states_idx = tf.argmax(states, 1)
+    print("states_idx", states_idx.get_shape())
+    batch_counts = tf.gather(counts, states_idx)
+    print("batch_counts", batch_counts.get_shape())
+    intrinsic_rewards = args.eta / tf.sqrt(tf.cast(batch_counts, tf.float32) + 1)
 
     # -------------------------------------------------
     # Compute RHS of bellman equation
-    intrinsic_rewards = 0.5 * args.eta * tf.reduce_sum(tf.square(forward_pred - phi_tp1), axis=1)
-    if args.curiosity:
-        reward = rewards + intrinsic_rewards
+    rewards = rewards + intrinsic_rewards
     target = rewards + args.gamma * q_next_states_masked
 
     # Compute the loss
-    loss = tf.losses.huber_loss(labels=tf.stop_gradient(target), predictions=q_states_actions)
+    tf.losses.huber_loss(labels=tf.stop_gradient(target), predictions=q_states_actions)
+
+    loss = tf.losses.get_total_loss()
 
     optimizer = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
     q_network_vars = tf.contrib.framework.get_variables('q_values')
@@ -249,15 +234,12 @@ if True:
     # Replay buffer
     replay_buffer = ReplayBuffer(args.buffer_size)
 
-    exploration = \
-            LinearSchedule(schedule_timesteps=int(args.exploration_fraction * args.max_timesteps),
-                           initial_p=args.initial_epsilon,
-                           final_p=args.final_epsilon)
+    exploration = LinearSchedule(schedule_timesteps=int(args.exploration_fraction * args.max_timesteps),
+                                 initial_p=args.initial_epsilon,
+                                 final_p=args.final_epsilon)
 
     # Create the session
-    config = tf.ConfigProto()
-    config.gpu_options.allow_growth=True
-    sess = tf.Session(config=config)
+    sess = tf.Session()
     #with tf.Session() as sess:
     if True:
 
@@ -272,6 +254,7 @@ if True:
         saved_mean_reward = None
 
         for t in range(args.max_timesteps):
+            print(args.visualize)
             if args.visualize:
                 env.render()
                 time.sleep(0.05)
@@ -282,13 +265,13 @@ if True:
             # Take action
             feed_dict = {obs_placeholder: np.array(obs).reshape((1,) +  obs.shape),
                          epsilon_placeholder: epsilon,  # TODO: hardcoded
-                         stochastic_placeholder: True}  # no stochasticity for curiosity
-            action = sess.run(output_actions, feed_dict)[0]
+                         stochastic_placeholder: True}
+            action, _ = sess.run([output_actions, update_counts], feed_dict)
+            action = action[0]
 
             new_obs, rew, done, _ = env.step(action)
 
             # Store transitions in the replay buffer
-            # TODO: remove replay buffer for curiosity
             replay_buffer.add(obs, action, rew, new_obs, float(done))
             obs = new_obs
 
@@ -309,11 +292,9 @@ if True:
                              next_states: next_obs_batch,
                              done_mask: done_mask_batch}
 
-                if args.curiosity:
-                    irew, _, _, _ = sess.run([intrinsic_rewards,
-                        train_op, inverse_dynamic_train_op, forward_train_op], feed_dict)
-                    if args.visualize:
-                        print("Intrinsic reward:", irew[0])
+                if args.visualize:
+                    _, irew = sess.run([train_op, intrinsic_rewards], feed_dict)
+                    print("Intrinsic reward:", irew[0])
                 else:
                     sess.run(train_op, feed_dict)
 
