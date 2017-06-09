@@ -10,17 +10,16 @@ from baselines.common.schedules import LinearSchedule
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--gamma', type=float, default=0.99, help="Gamma for the agent")
+parser.add_argument('--gamma', type=float, default=1.00, help="Gamma for the agent")
 parser.add_argument('--learning_rate', type=float, default=1e-3, help="learning rate")
 parser.add_argument('--max_timesteps', type=int, default=100000, help="Total number of timesteps")
-parser.add_argument('--replay_memory', action='store_true', help="Use replay memory")
 parser.add_argument('--buffer_size', type=int, default=50000, help="Buffer size for replay memory")
 parser.add_argument('--initial_epsilon', type=float, default=1.0, help="Initial epsilon")
 parser.add_argument('--exploration_fraction', type=float, default=0.2, help="Time spent exploring")
 parser.add_argument('--final_epsilon', type=float, default=0.02, help="Final epsilon")
 parser.add_argument('--train_freq', type=int, default=1, help="Train every train_freq steps")
 parser.add_argument('--batch_size', type=int, default=32, help="Batch size for training")
-parser.add_argument('--print_freq', type=int, default=1, help="Print every print_freq")
+parser.add_argument('--print_freq', type=int, default=10, help="Print every print_freq")
 parser.add_argument('--learning_starts', type=int, default=1000, help="Start training")
 parser.add_argument('--target_network_update_freq', type=int, default=500, help="Update target net")
 parser.add_argument('--grad_norm_clipping', type=float, default=10.0, help="Clip gradients")
@@ -125,6 +124,12 @@ MAP = [
     "FFFHFFFG"
 ]
 
+def minimize_with_clipping(optimizer, loss, var_list, grad_norm_clipping=10.0):
+    grads_and_vars = optimizer.compute_gradients(loss, var_list=var_list)
+    clipped_grads_and_vars = [(tf.clip_by_norm(g, grad_norm_clipping), v)
+                              for g, v in grads_and_vars]
+    return optimizer.apply_gradients(clipped_grads_and_vars)
+
 #def main(args):
 #def main():
 if True:
@@ -148,8 +153,11 @@ if True:
 
     # -------------------------------------
     # Model: gets actions with input states
+    def q_func(inputs, num_actions, reuse=False, scope="q_values"):
+        # TODO: intialize the bias optimistically?
+        return tf.layers.dense(inputs, num_actions, reuse=reuse, name=scope)
     # q_values has shape (None, num_actions) and contains q(s, a) for the input batch of states
-    q_values = tf.layers.dense(obs_placeholder, num_actions, name="q_values")
+    q_values = q_func(obs_placeholder, num_actions, scope="q_values")
     deterministic_actions = tf.argmax(q_values, axis=1)
 
     random_actions = tf.random_uniform([dynamic_batch_size], minval=0, maxval=num_actions,
@@ -173,39 +181,50 @@ if True:
     done_mask = tf.placeholder(tf.float32, [None], name="done_mask")
 
     # q network evaluation
-    q_states = tf.layers.dense(states, num_actions, reuse=True, name="q_values")
+    q_states = q_func(states, num_actions, reuse=True, scope="q_values")
 
-    target_q_values = tf.layers.dense(next_states, num_actions, name="target_q_values")
+    target_q_values = q_func(next_states, num_actions, scope="target_q_values")
 
     # q(s,a) which were selected
     # TODO: use tf.gather_nd(q_states, tf.stack((tf.range(q_states.shape[0]), actions), 1) ?
     q_states_actions = tf.reduce_sum(q_states * tf.one_hot(actions, num_actions), 1)
 
-    # TODO: add double q learning
-    q_next_states = tf.reduce_max(target_q_values, 1)
+    # Double q learning
+    q_tp1_online = q_func(next_states, num_actions, reuse=True, scope="q_values")
+    q_tp1_best_using_online_net = tf.arg_max(q_tp1_online, 1)
+    q_next_states = tf.reduce_sum(target_q_values * tf.one_hot(q_tp1_best_using_online_net,
+                                                               num_actions),
+                                  axis=1)
+
     q_next_states_masked = q_next_states * (1.0 - done_mask)
 
     # ----------------
     # Intrinsic reward
-    phi_t = tf.layers.dense(states, args.hidden_phi, name="phi/features")                # phi(t)
+    phi_t = tf.layers.dense(states, args.hidden_phi, name="phi/features")    # phi(t)
     phi_tp1 = tf.layers.dense(states, args.hidden_phi, reuse=True, name="phi/features")  # phi(t+1)
 
     #  --------------------------------------------------------
     # Inverse dynamic loss: predict a given phi(t) and phi(t+1)
     phi_t_tp1 = tf.concat([phi_t, phi_tp1], axis=1)
-    action_predictions = tf.layers.dense(phi_t_tp1, num_actions, name="phi/logits")
+    relu_phi_t_tp1 = tf.nn.relu(phi_t_tp1)
+    action_predictions = tf.layers.dense(relu_phi_t_tp1, num_actions, name="phi/logits")
     inverse_dynamic_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
             labels=actions, logits=action_predictions)
     inverse_dynamic_optimizer = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
     phi_vars = tf.contrib.framework.get_variables("phi")
     assert(len(phi_vars) == 4)
     # TODO: add gradient clipping
-    inverse_dynamic_train_op = inverse_dynamic_optimizer.minimize(inverse_dynamic_loss, var_list=phi_vars)
+    inverse_dynamic_train_op = minimize_with_clipping(inverse_dynamic_optimizer,
+                                                      inverse_dynamic_loss,
+                                                      phi_vars,
+                                                      args.grad_norm_clipping)
+
 
     # --------------------------------------------------
     # Forward model: predict phi(t+1) given phi(t) and a
-    forward_input = tf.concat([phi_t, tf.one_hot(actions, num_actions)], axis=1)
-    #print("forward_input shape", forward_input.get_shape())
+    forward_input = tf.concat([tf.nn.relu(phi_t), tf.one_hot(actions, num_actions)], axis=1)
+    print(forward_input.get_shape())
+    assert(forward_input.get_shape().as_list() == [None, args.hidden_phi + num_actions])
 
     forward_pred = tf.layers.dense(forward_input, args.hidden_phi, name="forward")
     forward_loss = tf.nn.l2_loss(forward_pred - phi_tp1)
@@ -214,13 +233,17 @@ if True:
     forward_vars = tf.contrib.framework.get_variables("forward")
     assert(len(forward_vars) == 2)
     # TODO: add gradient clipping
-    forward_train_op = forward_optimizer.minimize(forward_loss, var_list=forward_vars)
+    forward_train_op = minimize_with_clipping(forward_optimizer,
+                                              forward_loss,
+                                              forward_vars,
+                                              args.grad_norm_clipping)
 
 
     # -------------------------------------------------
     # Compute RHS of bellman equation
-    intrinsic_rewards = 0.5 * args.eta * tf.reduce_sum(tf.square(forward_pred - phi_tp1), axis=1)
+    intrinsic_rewards = args.eta * 0.5 * tf.reduce_sum(tf.square(forward_pred - phi_tp1), axis=1)
     if args.curiosity:
+        # TODO: get a way to store this full reward into the buffer
         reward = rewards + intrinsic_rewards
     target = rewards + args.gamma * q_next_states_masked
 
@@ -233,7 +256,7 @@ if True:
     assert(len(q_network_vars) == 2)
     assert(len(target_q_network_vars) == 2)
     # TODO: gradient clipping
-    train_op = optimizer.minimize(loss, var_list=q_network_vars)
+    train_op = minimize_with_clipping(optimizer, loss, q_network_vars, args.grad_norm_clipping)
 
     # Update target Q network
     update_target_q_ops = []
@@ -244,9 +267,13 @@ if True:
 
     init_op = tf.global_variables_initializer()
 
+    tf.get_default_graph().finalize()
+
 
     # -------------------------------------
     # Replay buffer
+    # TODO: add intrinsic reward into replaybuffer?
+    # TODO: do importance sampling with this intrinsic curiosity reward?
     replay_buffer = ReplayBuffer(args.buffer_size)
 
     exploration = \
@@ -281,7 +308,7 @@ if True:
 
             # Take action
             feed_dict = {obs_placeholder: np.array(obs).reshape((1,) +  obs.shape),
-                         epsilon_placeholder: epsilon,  # TODO: hardcoded
+                         epsilon_placeholder: epsilon,
                          stochastic_placeholder: True}  # no stochasticity for curiosity
             action = sess.run(output_actions, feed_dict)[0]
 
@@ -298,10 +325,7 @@ if True:
                 episode_rewards.append(0.0)
 
             if t > args.learning_starts and t % args.train_freq == 0:
-                if not args.replay_memory:
-                    experience = replay_buffer.give_last(1)
-                else:
-                    experience = replay_buffer.sample(args.batch_size)
+                experience = replay_buffer.sample(args.batch_size)
                 obs_batch, actions_batch, rew_batch, next_obs_batch, done_mask_batch = experience
                 feed_dict = {states: obs_batch,
                              actions: actions_batch,
@@ -317,7 +341,7 @@ if True:
                 else:
                     sess.run(train_op, feed_dict)
 
-            if t > args.learning_starts and t% args.target_network_update_freq == 0:
+            if t > args.learning_starts and t % args.target_network_update_freq == 0:
                 sess.run(update_target_q)
 
             mean_100ep_reward = np.mean(episode_rewards[-100:])

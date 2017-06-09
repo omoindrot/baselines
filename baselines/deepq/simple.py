@@ -246,7 +246,7 @@ def learn(env,
             if done and print_freq is not None and len(episode_rewards) % print_freq == 0:
                 logger.record_tabular("steps", t)
                 logger.record_tabular("episodes", num_episodes)
-                logger.record_tabular("mean 100 episode reward", mean_100ep_reward)
+                logger.record_tabular("mean 100 episode reward", "%.2f" % mean_100ep_reward)
                 logger.record_tabular("% time spent exploring", int(100 * exploration.value(t)))
                 logger.dump_tabular()
 
