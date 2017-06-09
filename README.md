@@ -21,7 +21,11 @@
       - got 30% epsilon once
     - purely random exploration (only random actions) gets to the reward in 514 steps on average
 
-- curiosity driven exploration
-  - 
+#### Curiosity driven exploration
+- We need to be careful when using replay memory here.
+  - we need to store the intrinsic reward **at the time of the step** in the replay buffer
+- Try to do importance sampling given this curiosity reward
+  - Sample more episodes where the intrinsic reward was high, which should give more training information
+
 
 
