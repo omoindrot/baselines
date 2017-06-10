@@ -319,7 +319,26 @@ def main():
             episode_rewards[-1] += rew
             if done:
                 obs = env.reset()
+                summ = tf.Summary(value=[tf.Summary.Value(tag="ep_reward",
+                                                          simple_value=episode_rewards[-1])])
+                writer.add_summary(summ, it)
                 episode_rewards.append(0.0)
+
+            # TODO: cleanup here
+            if it > args.batch_size and it <= args.learning_starts and it % args.train_freq == 0:
+                if args.curiosity:
+                    experience = replay_buffer.sample(args.batch_size)
+                    obs_batch, actions_batch, rew_batch, next_obs_batch, done_mask_batch = \
+                        experience
+                    feed_dict = {states: obs_batch,
+                                 actions: actions_batch,
+                                 rewards: rew_batch,
+                                 next_states: next_obs_batch,
+                                 done_mask: done_mask_batch,
+                                 epsilon_placeholder: epsilon}  # need epsilon just for plotting
+                    summ, _, _ = sess.run([all_summaries, inverse_dynamic_train_op,
+                                           forward_train_op], feed_dict)
+                    writer.add_summary(summ, it)
 
             if it > args.learning_starts and it % args.train_freq == 0:
                 experience = replay_buffer.sample(args.batch_size)
@@ -342,6 +361,10 @@ def main():
                 sess.run(update_target_q)
 
             mean_100ep_reward = np.mean(episode_rewards[-100:])
+            summ = tf.Summary(value=[tf.Summary.Value(tag="mean_100ep_reward",
+                                                      simple_value=mean_100ep_reward)])
+            writer.add_summary(summ, it)
+
             num_episodes = len(episode_rewards)
             if done and args.print_freq is not None and len(episode_rewards) % args.print_freq == 0:
                 if args.visualize:
