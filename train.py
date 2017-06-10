@@ -15,29 +15,6 @@ from environments import EnvironmentCreator
 from models import MLP, CNN_to_MLP
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--game', type=str, default="frozen", help="Game to play.")
-parser.add_argument('--gamma', type=float, default=1.00, help="Gamma for the agent")
-parser.add_argument('--learning_rate', type=float, default=1e-3, help="learning rate")
-parser.add_argument('--max_timesteps', type=int, default=100000, help="Total number of timesteps")
-parser.add_argument('--buffer_size', type=int, default=50000, help="Buffer size for replay memory")
-parser.add_argument('--initial_epsilon', type=float, default=1.0, help="Initial epsilon")
-parser.add_argument('--exploration_fraction', type=float, default=0.2, help="Time spent exploring")
-parser.add_argument('--final_epsilon', type=float, default=0.02, help="Final epsilon")
-parser.add_argument('--train_freq', type=int, default=1, help="Train every train_freq steps")
-parser.add_argument('--batch_size', type=int, default=32, help="Batch size for training")
-parser.add_argument('--print_freq', type=int, default=100, help="Print every print_freq")
-parser.add_argument('--learning_starts', type=int, default=1000, help="Start training")
-parser.add_argument('--target_network_update_freq', type=int, default=500, help="Update target net")
-parser.add_argument('--grad_norm_clipping', type=float, default=10.0, help="Clip gradients")
-parser.add_argument('--visualize', action='store_true', help="Render environment")
-parser.add_argument('--curiosity', action='store_true', help="Activate curiosity module")
-parser.add_argument('--hidden_phi', type=int, default=16, help="Hidden dimension for phi")
-parser.add_argument('--eta', type=float, default=0.01, help="Coefficient for intrinsic reward")
-
-args = parser.parse_args()
-
-
 def eval_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholder,
                output_actions, sess, samples=1000):
     """
@@ -113,8 +90,8 @@ def minimize_with_clipping(optimizer, loss, var_list, grad_norm_clipping=10.0):
     return optimizer.apply_gradients(clipped_grads_and_vars)
 
 
-#def main():
-if True:
+def main(args):
+# if True:
     tf.reset_default_graph()
     # Create the environment
     env_creator = EnvironmentCreator(args.game)
@@ -186,6 +163,7 @@ if True:
     action_predictions = tf.layers.dense(relu_phi_t_tp1, num_actions, name="phi/logits")
     inverse_dynamic_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
         labels=actions, logits=action_predictions)
+    tf.summary.scalar("inverse_dynamic_loss",inverse_dynamic_loss)
     inverse_dynamic_optimizer = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
     phi_vars = tf.contrib.framework.get_variables("phi")
     assert len(phi_vars) == 4
@@ -199,11 +177,12 @@ if True:
     # --------------------------------------------------
     # Forward model: predict phi(t+1) given phi(t) and a
     forward_input = tf.concat([tf.nn.relu(phi_t), tf.one_hot(actions, num_actions)], axis=1)
-    print(forward_input.get_shape())
+    # print(forward_input.get_shape())
     assert forward_input.get_shape().as_list() == [None, args.hidden_phi + num_actions]
 
     forward_pred = tf.layers.dense(forward_input, args.hidden_phi, name="forward")
     forward_loss = tf.nn.l2_loss(forward_pred - phi_tp1)
+    tf.summary.scalar("forward_loss",forward_loss)
 
     forward_optimizer = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
     forward_vars = tf.contrib.framework.get_variables("forward")
@@ -218,6 +197,7 @@ if True:
     # -------------------------------------------------
     # Compute RHS of bellman equation
     intrinsic_rewards = args.eta * 0.5 * tf.reduce_sum(tf.square(forward_pred - phi_tp1), axis=1)
+    tf.summary.scalar("intrinsic_reward", tf.reduce_mean(intrinsic_rewards))
     if args.curiosity:
         # TODO: get a way to store this full reward into the buffer
         rewards = rewards + intrinsic_rewards
@@ -225,10 +205,11 @@ if True:
 
     # Compute the loss
     loss = tf.losses.huber_loss(labels=tf.stop_gradient(target), predictions=q_states_actions)
+    tf.summary.scalar("huber_loss", loss)
 
     optimizer = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
     q_network_vars = tf.contrib.framework.get_variables('q_values')
-    print(q_network_vars)
+    # print(q_network_vars)
     target_q_network_vars = tf.contrib.framework.get_variables('target_q_values')
 
     # TODO: gradient clipping
@@ -261,6 +242,8 @@ if True:
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
 
+    merge_summary = tf.summary.merge_all()
+
     with tf.Session(config=config) as sess:
         sess.run(init_op)
         sess.run(update_target_q)
@@ -268,9 +251,12 @@ if True:
         episode_rewards = [0.0]
         obs = env.reset()
 
+        writer = tf.summary.FileWriter(logdir=args.logdir)
+
         # Save model
         # TODO: save model and stuff
         #saved_mean_reward = None
+        first_reward = 0 #first time agent reaches the end reward
 
         for it in range(args.max_timesteps):
             if env_creator.callback(it, episode_rewards):
@@ -286,6 +272,9 @@ if True:
             action = sess.run(output_actions, feed_dict)[0]
 
             new_obs, rew, done, _ = env.step(action)
+
+            if rew > 0 and first_reward == 0:
+                first_reward = it
 
             # Store transitions in the replay buffer
             # TODO: remove replay buffer for curiosity
@@ -307,17 +296,21 @@ if True:
                              done_mask: done_mask_batch}
 
                 if args.curiosity:
-                    irew, _, _, _ = sess.run([intrinsic_rewards,
+                    irew, _, _, _, summary_all = sess.run([intrinsic_rewards,
                                               train_op,
                                               inverse_dynamic_train_op,
-                                              forward_train_op], feed_dict)
+                                              forward_train_op, merge_summary], feed_dict)
                 else:
-                    sess.run(train_op, feed_dict)
+                    _, summary_all =  sess.run([train_op, merge_summary], feed_dict)
+
+                writer.add_summary(summary_all)
 
             if it > args.learning_starts and it % args.target_network_update_freq == 0:
                 sess.run(update_target_q)
 
             mean_100ep_reward = np.mean(episode_rewards[-100:])
+            summary = tf.Summary(value=[tf.Summary.Value(tag="mean_100ep_reward", simple_value=mean_100ep_reward)])
+            writer.add_summary(summary,it)
             num_episodes = len(episode_rewards)
             if done and args.print_freq is not None and len(episode_rewards) % args.print_freq == 0:
                 if args.visualize:
@@ -338,8 +331,38 @@ if True:
         eval_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholder,
                    output_actions, sess, samples=100)
 
+    return first_reward
+
 
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--logdir', type=str, default="log/test", help="log directory")
+    parser.add_argument('--game', type=str, default="frozen", help="Game to play.")
+    parser.add_argument('--gamma', type=float, default=1.00, help="Gamma for the agent")
+    parser.add_argument('--learning_rate', type=float, default=1e-3, help="learning rate")
+    parser.add_argument('--max_timesteps', type=int, default=100000, help="Total number of timesteps")
+    parser.add_argument('--buffer_size', type=int, default=50000, help="Buffer size for replay memory")
+    parser.add_argument('--initial_epsilon', type=float, default=1.0, help="Initial epsilon")
+    parser.add_argument('--exploration_fraction', type=float, default=0.2, help="Time spent exploring")
+    parser.add_argument('--final_epsilon', type=float, default=0.02, help="Final epsilon")
+    parser.add_argument('--train_freq', type=int, default=1, help="Train every train_freq steps")
+    parser.add_argument('--batch_size', type=int, default=32, help="Batch size for training")
+    parser.add_argument('--print_freq', type=int, default=100, help="Print every print_freq")
+    parser.add_argument('--learning_starts', type=int, default=1000, help="Start training")
+    parser.add_argument('--target_network_update_freq', type=int, default=500, help="Update target net")
+    parser.add_argument('--grad_norm_clipping', type=float, default=10.0, help="Clip gradients")
+    parser.add_argument('--visualize', action='store_true', help="Render environment")
+    parser.add_argument('--curiosity', action='store_true', help="Activate curiosity module")
+    parser.add_argument('--hidden_phi', type=int, default=16, help="Hidden dimension for phi")
+    parser.add_argument('--eta', type=float, default=0.01, help="Coefficient for intrinsic reward")
+
+    args = parser.parse_args()
+    results = []
+    for k in range(5):
+        print(k)
+        res = main(args)
+        results.append(res)
+
+    print(results)
