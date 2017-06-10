@@ -17,7 +17,7 @@ from models import MLP, CNN_to_MLP
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--game', type=str, default="frozen", help="Game to play.")
-parser.add_argument('--gamma', type=float, default=1.00, help="Gamma for the agent")
+parser.add_argument('--gamma', type=float, default=1.0, help="Gamma for the agent")
 parser.add_argument('--learning_rate', type=float, default=1e-3, help="learning rate")
 parser.add_argument('--max_timesteps', type=int, default=100000, help="Total number of timesteps")
 parser.add_argument('--buffer_size', type=int, default=50000, help="Buffer size for replay memory")
@@ -26,7 +26,7 @@ parser.add_argument('--exploration_fraction', type=float, default=0.2, help="Tim
 parser.add_argument('--final_epsilon', type=float, default=0.02, help="Final epsilon")
 parser.add_argument('--train_freq', type=int, default=1, help="Train every train_freq steps")
 parser.add_argument('--batch_size', type=int, default=32, help="Batch size for training")
-parser.add_argument('--print_freq', type=int, default=100, help="Print every print_freq")
+parser.add_argument('--print_freq', type=int, default=10, help="Print every print_freq")
 parser.add_argument('--learning_starts', type=int, default=1000, help="Start training")
 parser.add_argument('--target_network_update_freq', type=int, default=500, help="Update target net")
 parser.add_argument('--grad_norm_clipping', type=float, default=10.0, help="Clip gradients")
@@ -190,6 +190,7 @@ if True:
     action_predictions = tf.layers.dense(relu_phi_t_tp1, num_actions, name="phi/logits")
     inverse_dynamic_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
         labels=actions, logits=action_predictions)
+    inverse_dynamic_loss = tf.reduce_mean(inverse_dynamic_loss)
     inverse_dynamic_optimizer = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
     phi_vars = tf.contrib.framework.get_variables("phi")
     assert len(phi_vars) == 4
@@ -345,5 +346,5 @@ if True:
 
 
 
-if __name__ == '__main__':
-    main()
+#if __name__ == '__main__':
+    #main()
