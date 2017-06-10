@@ -1,3 +1,7 @@
+"""
+Train a deep Q learning model on Cartpole.
+"""
+
 import time
 import argparse
 import numpy as np
@@ -24,18 +28,24 @@ parser.add_argument('--learning_starts', type=int, default=1000, help="Start tra
 parser.add_argument('--target_network_update_freq', type=int, default=500, help="Update target net")
 parser.add_argument('--grad_norm_clipping', type=float, default=10.0, help="Clip gradients")
 parser.add_argument('--visualize', action='store_true', help="Render environment")
+parser.add_argument('--curiosity', action='store_true', help="Activate curiosity module")
+parser.add_argument('--hidden_phi', type=int, default=16, help="Hidden dimension for phi")
+parser.add_argument('--eta', type=float, default=0.01, help="Coefficient for intrinsic reward")
 
 args = parser.parse_args()
 
 
-def callback(lcl, glb):
+def callback(it, episode_rewards):
     # stop training if reward exceeds 0.8
-    is_solved = lcl['t'] > 100 and sum(lcl['episode_rewards'][-101:-1]) / 100 >= 199
+    is_solved = it > 100 and sum(episode_rewards[-101:-1]) / 100 >= 199
     return is_solved
 
 
 def eval_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholder,
                output_actions, sess, samples=1000):
+    """
+    Evaluate the model on @a samples
+    """
     sum_reward = 0
     for _ in range(samples):
         obs, done = env.reset(), False
@@ -75,10 +85,16 @@ def enjoy_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholde
         time.sleep(1)
 
 
-#def main(args):
-#def main():
-if True:
+def minimize_with_clipping(optimizer, loss, var_list, grad_norm_clipping=10.0):
+    grads_and_vars = optimizer.compute_gradients(loss, var_list=var_list)
+    clipped_grads_and_vars = [(tf.clip_by_norm(g, grad_norm_clipping), v)
+                              for g, v in grads_and_vars]
+    return optimizer.apply_gradients(clipped_grads_and_vars)
+
+
+def main():
     tf.reset_default_graph()
+
     # Create the environment
     env = gym.make("CartPole-v0")
 
@@ -141,28 +157,65 @@ if True:
     q_next_states_masked = q_next_states * (1.0 - done_mask)
 
 
+    # ----------------
+    # Intrinsic reward
+    phi_t = tf.layers.dense(states, args.hidden_phi, name="phi/features")    # phi(t)
+    phi_tp1 = tf.layers.dense(states, args.hidden_phi, reuse=True, name="phi/features")  # phi(t+1)
+
+    #  --------------------------------------------------------
+    # Inverse dynamic loss: predict a given phi(t) and phi(t+1)
+    phi_t_tp1 = tf.concat([phi_t, phi_tp1], axis=1)
+    relu_phi_t_tp1 = tf.nn.relu(phi_t_tp1)
+    action_predictions = tf.layers.dense(relu_phi_t_tp1, num_actions, name="phi/logits")
+    inverse_dynamic_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
+        labels=actions, logits=action_predictions)
+    inverse_dynamic_optimizer = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
+    phi_vars = tf.contrib.framework.get_variables("phi")
+    assert len(phi_vars) == 4
+    # TODO: add gradient clipping
+    inverse_dynamic_train_op = minimize_with_clipping(inverse_dynamic_optimizer,
+                                                      inverse_dynamic_loss,
+                                                      phi_vars,
+                                                      args.grad_norm_clipping)
+
+
+    # --------------------------------------------------
+    # Forward model: predict phi(t+1) given phi(t) and a
+    forward_input = tf.concat([tf.nn.relu(phi_t), tf.one_hot(actions, num_actions)], axis=1)
+    print(forward_input.get_shape())
+    assert forward_input.get_shape().as_list() == [None, args.hidden_phi + num_actions]
+
+    forward_pred = tf.layers.dense(forward_input, args.hidden_phi, name="forward")
+    forward_loss = tf.nn.l2_loss(forward_pred - phi_tp1)
+
+    forward_optimizer = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
+    forward_vars = tf.contrib.framework.get_variables("forward")
+    assert len(forward_vars) == 2
+    # TODO: add gradient clipping
+    forward_train_op = minimize_with_clipping(forward_optimizer,
+                                              forward_loss,
+                                              forward_vars,
+                                              args.grad_norm_clipping)
+
+
     # -------------------------------------------------
     # Compute RHS of bellman equation
+    intrinsic_rewards = args.eta * 0.5 * tf.reduce_sum(tf.square(forward_pred - phi_tp1), axis=1)
+    if args.curiosity:
+        # TODO: get a way to store this full reward into the buffer
+        rewards = rewards + intrinsic_rewards
     target = rewards + args.gamma * q_next_states_masked
 
     # Compute the loss
-    #loss = tf.losses.huber_loss(labels=tf.stop_gradient(target), predictions=q_states_actions)
-    diff = tf.stop_gradient(target) - q_states_actions
-    errors = tf.where(tf.abs(diff) < 1.0, tf.square(diff) * 0.5, tf.abs(diff) - 0.5)
-    loss = tf.reduce_mean(errors)
+    loss = tf.losses.huber_loss(labels=tf.stop_gradient(target), predictions=q_states_actions)
 
     optimizer = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
     q_network_vars = tf.contrib.framework.get_variables('q_values')
     target_q_network_vars = tf.contrib.framework.get_variables('target_q_values')
-    assert(len(q_network_vars) == 4)
-    assert(len(target_q_network_vars) == 4)
-
-    grads_and_vars = optimizer.compute_gradients(loss, var_list=q_network_vars)
-
-    clipped_grads_and_vars = [(tf.clip_by_norm(g, args.grad_norm_clipping), v)
-                              for g, v in grads_and_vars]
-    assert(len(clipped_grads_and_vars) == 4)
-    train_op = optimizer.apply_gradients(clipped_grads_and_vars)
+    assert len(q_network_vars) == 4
+    assert len(target_q_network_vars) == 4
+    # TODO: gradient clipping
+    train_op = minimize_with_clipping(optimizer, loss, q_network_vars, args.grad_norm_clipping)
 
     # Update target Q network
     update_target_q_ops = []
@@ -187,11 +240,9 @@ if True:
 
     # Create the session
     config = tf.ConfigProto()
-    config.gpu_options.allow_growth=True
-    sess = tf.Session(config=config)
-    #with tf.Session() as sess:
-    if True:
+    config.gpu_options.allow_growth = True
 
+    with tf.Session(config=config) as sess:
         sess.run(init_op)
         sess.run(update_target_q)
 
@@ -200,12 +251,15 @@ if True:
 
         # Save model
         # TODO: save model and stuff
-        saved_mean_reward = None
+        #saved_mean_reward = None
 
-        for t in range(args.max_timesteps):
+        for it in range(args.max_timesteps):
+
+            if callback(it, episode_rewards):
+                break
 
             # Update epsilon
-            epsilon = exploration.value(t)
+            epsilon = exploration.value(it)
 
             # Take action
             feed_dict = {obs_placeholder: np.array(obs).reshape((1,) +  obs.shape),
@@ -224,45 +278,50 @@ if True:
                 obs = env.reset()
                 episode_rewards.append(0.0)
 
-            if t > args.learning_starts and t % args.train_freq == 0:
+            if it > args.learning_starts and it % args.train_freq == 0:
                 experience = replay_buffer.sample(args.batch_size)
                 obs_batch, actions_batch, rew_batch, next_obs_batch, done_mask_batch = experience
-                assert(obs_batch.shape == (args.batch_size, 4))
-                assert(next_obs_batch.shape == (args.batch_size, 4))
+                assert obs_batch.shape == (args.batch_size, 4)
+                assert next_obs_batch.shape == (args.batch_size, 4)
                 feed_dict = {states: obs_batch,
                              actions: actions_batch,
                              rewards: rew_batch,
                              next_states: next_obs_batch,
                              done_mask: done_mask_batch}
 
-                _, loss_val = sess.run([train_op, loss], feed_dict)
+                if args.curiosity:
+                    irew, _, _, _ = sess.run([intrinsic_rewards,
+                                              train_op,
+                                              inverse_dynamic_train_op,
+                                              forward_train_op], feed_dict)
+                else:
+                    sess.run(train_op, feed_dict)
 
-            if t > args.learning_starts and t % args.target_network_update_freq == 0:
+            if it > args.learning_starts and it % args.target_network_update_freq == 0:
                 sess.run(update_target_q)
 
             mean_100ep_reward = np.mean(episode_rewards[-100:])
             num_episodes = len(episode_rewards)
             if done and args.print_freq is not None and len(episode_rewards) % args.print_freq == 0:
-                logger.record_tabular("steps", t)
+                if args.visualize:
+                    enjoy_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholder,
+                                output_actions, sess, num_episodes=1)
+                logger.record_tabular("steps", it)
                 logger.record_tabular("episodes", num_episodes)
                 logger.record_tabular("mean 100 episode reward", mean_100ep_reward)
                 logger.record_tabular("% time spent exploring", int(100 * epsilon))
                 logger.dump_tabular()
 
-            if done and args.visualize:
-                time.sleep(1.0)
 
             # TODO: save regularly
 
 
     enjoy_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholder,
-               output_actions, sess, num_episodes=1)
+                output_actions, sess, num_episodes=1)
     print("Evaluating model")
     eval_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholder,
                output_actions, sess, samples=100)
 
 
-
-
-#if __name__ == '__main__':
-    #main()
+if __name__ == '__main__':
+    main()
