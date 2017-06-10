@@ -43,18 +43,19 @@ class CNN_to_MLP(object):
                 for filters, kernel, stride in self.convs:
                     out = tf.layers.conv2d(out, filters, kernel, stride, "same",
                                            activation=tf.nn.relu)
+            out = tf.contrib.layers.flatten(out)
 
             # State V(s)
             with tf.variable_scope("state_value"):
                 state_out = out
-                for hidden_size in hiddens:
+                for hidden_size in self.hiddens:
                     state_out = tf.layers.dense(state_out, hidden_size, tf.nn.relu)
                 state_score = tf.layers.dense(state_out, num_actions)
 
             # Advantage A(s,a)
-            with tf.variable_score("action_value"):
+            with tf.variable_scope("action_value"):
                 action_out = out
-                for hidden_size in hiddens:
+                for hidden_size in self.hiddens:
                     action_out = tf.layers.dense(action_out, hidden_size, tf.nn.relu)
                 action_scores = tf.layers.dense(action_out, num_actions)
 

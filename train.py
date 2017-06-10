@@ -131,7 +131,10 @@ if True:
 
     # -------------------------------------
     # Model: gets actions with input states
-    model = MLP([])
+    if args.game == "frozen":
+        model = MLP([])
+    elif args.game == "pong":
+        model = CNN_to_MLP([(32, 8, 4), (64, 4, 2), (64, 3, 1)], [256])
     # q_values has shape (None, num_actions) and contains q(s, a) for the input batch of states
     q_values = model.q_function(obs_placeholder, num_actions, scope="q_values")
     deterministic_actions = tf.argmax(q_values, axis=1)
@@ -176,6 +179,7 @@ if True:
 
     # ----------------
     # Intrinsic reward
+    # TODO: adapt to CNN / MLP
     phi_t = tf.layers.dense(states, args.hidden_phi, name="phi/features")    # phi(t)
     phi_tp1 = tf.layers.dense(states, args.hidden_phi, reuse=True, name="phi/features")  # phi(t+1)
 
