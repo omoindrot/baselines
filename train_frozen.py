@@ -1,3 +1,7 @@
+"""
+Train a deep Q learning model on Frozen Lake.
+"""
+
 import time
 import argparse
 import numpy as np
@@ -8,6 +12,16 @@ from baselines import logger
 from baselines.deepq.replay_buffer import ReplayBuffer
 from baselines.common.schedules import LinearSchedule
 
+MAP = [
+    "SFFFFFFF",
+    "FFFFFFFF",
+    "FFFHFFFF",
+    "FFFFFHFF",
+    "FFFHFFFF",
+    "FHHFFFHF",
+    "FHFFHFHF",
+    "FFFHFFFG"
+]
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--gamma', type=float, default=1.00, help="Gamma for the agent")
@@ -31,33 +45,33 @@ parser.add_argument('--eta', type=int, default=0.01, help="Coefficient for intri
 args = parser.parse_args()
 
 
-def MyWrapper():
-    class MyWrapper(gym.ObservationWrapper):
-        """
-        Transforms the discrete state space into continous.
-        For state i will return one-hot vector with index i
-        """
-        def __init__(self, env):
-            super(MyWrapper, self).__init__(env)
-            self.num_states = env.observation_space.n
-            self.observation_space = gym.spaces.Box(0.0, 1.0, (self.num_states))
+class MyWrapper(gym.ObservationWrapper):
+    """
+    Transforms the discrete state space into continous.
+    For state i will return one-hot vector with index i
+    """
+    def __init__(self, env):
+        super(MyWrapper, self).__init__(env)
+        self.num_states = env.observation_space.n
+        self.observation_space = gym.spaces.Box(0.0, 1.0, (self.num_states))
 
-        def _observation(self, observation):
-            one_hot_obs = np.zeros(self.num_states)
-            one_hot_obs[observation] = 1.0
-            return one_hot_obs
-
-    return MyWrapper
+    def _observation(self, observation):
+        one_hot_obs = np.zeros(self.num_states)
+        one_hot_obs[observation] = 1.0
+        return one_hot_obs
 
 
-def callback(lcl, glb):
-    # stop training if reward exceeds 0.8
-    is_solved = lcl['t'] > 100 and sum(lcl['episode_rewards'][-101:-1]) / 100 >= 0.8
+def callback(it, episode_rewards):
+    # stop training if reward exceeds 0.99
+    is_solved = it > 100 and sum(episode_rewards[-101:-1]) / 100 >= 0.99
     return is_solved
 
 
 def eval_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholder,
                output_actions, sess, samples=1000):
+    """
+    Evaluate model on environement for @a samples runs.
+    """
     sum_reward = 0
     for _ in range(samples):
         obs, done = env.reset(), False
@@ -81,6 +95,9 @@ def eval_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholder
 
 def enjoy_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholder,
                 output_actions, sess, num_episodes=1):
+    """
+    Render the agent on the model for @a num_episodes episodes.
+    """
     for _ in range(num_episodes):
         obs, done = env.reset(), False
         episode_rew = 0
@@ -97,32 +114,25 @@ def enjoy_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholde
         time.sleep(1)
 
 def check_random_model(samples=10):
+    """
+    Average number of steps to get to the end with a random model.
+    """
     env = gym.make("FrozenLake8x8-v0")
     total_count = 0
-    for sample in range(samples):
+    for _ in range(samples):
         found = False
         count = 0
         while not found:
-            obs, done = env.reset(), False
+            _, done = env.reset(), False
             count += 1
             while not done:
-                obs, rew, done, _ = env.step(env.action_space.sample())
+                _, rew, done, _ = env.step(env.action_space.sample())
             if rew > 0:
                 found = True
         total_count += count
     mean_count = total_count / float(samples)
     print("It took %d random simulations to find the reward on average" % mean_count)
 
-MAP = [
-    "SFFFFFFF",
-    "FFFFFFFF",
-    "FFFHFFFF",
-    "FFFFFHFF",
-    "FFFHFFFF",
-    "FHHFFFHF",
-    "FHFFHFHF",
-    "FFFHFFFG"
-]
 
 def minimize_with_clipping(optimizer, loss, var_list, grad_norm_clipping=10.0):
     grads_and_vars = optimizer.compute_gradients(loss, var_list=var_list)
@@ -130,9 +140,8 @@ def minimize_with_clipping(optimizer, loss, var_list, grad_norm_clipping=10.0):
                               for g, v in grads_and_vars]
     return optimizer.apply_gradients(clipped_grads_and_vars)
 
-#def main(args):
-#def main():
-if True:
+
+def main():
     tf.reset_default_graph()
     # Create the environment
     #env = gym.make("FrozenLake8x8-v0")
@@ -140,8 +149,7 @@ if True:
 
     env = FrozenLakeEnv(desc=MAP, is_slippery=False)
     env = gym.wrappers.TimeLimit(env, max_episode_steps=200)
-    wrapper = MyWrapper()
-    env = wrapper(env)
+    env = MyWrapper(env)
     num_actions = env.action_space.n
 
     obs_placeholder = tf.placeholder(tf.float32, (None,) + env.observation_space.shape,
@@ -209,10 +217,10 @@ if True:
     relu_phi_t_tp1 = tf.nn.relu(phi_t_tp1)
     action_predictions = tf.layers.dense(relu_phi_t_tp1, num_actions, name="phi/logits")
     inverse_dynamic_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
-            labels=actions, logits=action_predictions)
+        labels=actions, logits=action_predictions)
     inverse_dynamic_optimizer = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
     phi_vars = tf.contrib.framework.get_variables("phi")
-    assert(len(phi_vars) == 4)
+    assert len(phi_vars) == 4
     # TODO: add gradient clipping
     inverse_dynamic_train_op = minimize_with_clipping(inverse_dynamic_optimizer,
                                                       inverse_dynamic_loss,
@@ -224,14 +232,14 @@ if True:
     # Forward model: predict phi(t+1) given phi(t) and a
     forward_input = tf.concat([tf.nn.relu(phi_t), tf.one_hot(actions, num_actions)], axis=1)
     print(forward_input.get_shape())
-    assert(forward_input.get_shape().as_list() == [None, args.hidden_phi + num_actions])
+    assert forward_input.get_shape().as_list() == [None, args.hidden_phi + num_actions]
 
     forward_pred = tf.layers.dense(forward_input, args.hidden_phi, name="forward")
     forward_loss = tf.nn.l2_loss(forward_pred - phi_tp1)
 
     forward_optimizer = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
     forward_vars = tf.contrib.framework.get_variables("forward")
-    assert(len(forward_vars) == 2)
+    assert len(forward_vars) == 2
     # TODO: add gradient clipping
     forward_train_op = minimize_with_clipping(forward_optimizer,
                                               forward_loss,
@@ -244,7 +252,7 @@ if True:
     intrinsic_rewards = args.eta * 0.5 * tf.reduce_sum(tf.square(forward_pred - phi_tp1), axis=1)
     if args.curiosity:
         # TODO: get a way to store this full reward into the buffer
-        reward = rewards + intrinsic_rewards
+        rewards = rewards + intrinsic_rewards
     target = rewards + args.gamma * q_next_states_masked
 
     # Compute the loss
@@ -253,8 +261,8 @@ if True:
     optimizer = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
     q_network_vars = tf.contrib.framework.get_variables('q_values')
     target_q_network_vars = tf.contrib.framework.get_variables('target_q_values')
-    assert(len(q_network_vars) == 2)
-    assert(len(target_q_network_vars) == 2)
+    assert len(q_network_vars) == 2
+    assert len(target_q_network_vars) == 2
     # TODO: gradient clipping
     train_op = minimize_with_clipping(optimizer, loss, q_network_vars, args.grad_norm_clipping)
 
@@ -283,11 +291,9 @@ if True:
 
     # Create the session
     config = tf.ConfigProto()
-    config.gpu_options.allow_growth=True
-    sess = tf.Session(config=config)
-    #with tf.Session() as sess:
-    if True:
+    config.gpu_options.allow_growth = True
 
+    with tf.Session(config=config) as sess:
         sess.run(init_op)
         sess.run(update_target_q)
 
@@ -296,15 +302,17 @@ if True:
 
         # Save model
         # TODO: save model and stuff
-        saved_mean_reward = None
+        #saved_mean_reward = None
 
-        for t in range(args.max_timesteps):
+        for it in range(args.max_timesteps):
+            if callback(it, episode_rewards):
+                break
             if args.visualize:
                 env.render()
                 time.sleep(0.05)
 
             # Update epsilon
-            epsilon = exploration.value(t)
+            epsilon = exploration.value(it)
 
             # Take action
             feed_dict = {obs_placeholder: np.array(obs).reshape((1,) +  obs.shape),
@@ -324,7 +332,7 @@ if True:
                 obs = env.reset()
                 episode_rewards.append(0.0)
 
-            if t > args.learning_starts and t % args.train_freq == 0:
+            if it > args.learning_starts and it % args.train_freq == 0:
                 experience = replay_buffer.sample(args.batch_size)
                 obs_batch, actions_batch, rew_batch, next_obs_batch, done_mask_batch = experience
                 feed_dict = {states: obs_batch,
@@ -335,19 +343,21 @@ if True:
 
                 if args.curiosity:
                     irew, _, _, _ = sess.run([intrinsic_rewards,
-                        train_op, inverse_dynamic_train_op, forward_train_op], feed_dict)
+                                              train_op,
+                                              inverse_dynamic_train_op,
+                                              forward_train_op], feed_dict)
                     if args.visualize:
                         print("Intrinsic reward:", irew[0])
                 else:
                     sess.run(train_op, feed_dict)
 
-            if t > args.learning_starts and t % args.target_network_update_freq == 0:
+            if it > args.learning_starts and it % args.target_network_update_freq == 0:
                 sess.run(update_target_q)
 
             mean_100ep_reward = np.mean(episode_rewards[-100:])
             num_episodes = len(episode_rewards)
             if done and args.print_freq is not None and len(episode_rewards) % args.print_freq == 0:
-                logger.record_tabular("steps", t)
+                logger.record_tabular("steps", it)
                 logger.record_tabular("episodes", num_episodes)
                 logger.record_tabular("mean 100 episode reward", mean_100ep_reward)
                 logger.record_tabular("% time spent exploring", int(100 * epsilon))
@@ -358,9 +368,8 @@ if True:
 
             # TODO: save regularly
 
-
     enjoy_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholder,
-               output_actions, sess, num_episodes=1)
+                output_actions, sess, num_episodes=1)
     print("Evaluating model")
     eval_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholder,
                output_actions, sess, samples=100)
@@ -368,5 +377,5 @@ if True:
 
 
 
-#if __name__ == '__main__':
-    #main()
+if __name__ == '__main__':
+    main()
