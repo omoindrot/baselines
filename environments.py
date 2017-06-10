@@ -2,7 +2,6 @@
 """
 
 import gym
-import numpy as np
 
 from baselines.common.atari_wrappers_deprecated import wrap_dqn, ScaledFloatFrame
 
@@ -18,22 +17,6 @@ MAP = [
     "FFFHFFFG"
 ]
 
-class OneHotWrapper(gym.ObservationWrapper):
-    """
-    Transforms the discrete state space into continous.
-    For state i will return one-hot vector with index i
-    """
-    def __init__(self, env):
-        super(OneHotWrapper, self).__init__(env)
-        self.num_states = env.observation_space.n
-        self.observation_space = gym.spaces.Box(0.0, 1.0, (self.num_states))
-
-    def _observation(self, observation):
-        one_hot_obs = np.zeros(self.num_states)
-        one_hot_obs[observation] = 1.0
-        return one_hot_obs
-
-
 class EnvironmentCreator(object):
     """Create environment.
 
@@ -41,20 +24,38 @@ class EnvironmentCreator(object):
     ----------
     game: (string) Gives the game to play
     """
-    def __init__(self, game):
+    def __init__(self, game, record=False, outdir="records"):
         self.game = game
         if game == 'pong':
             env = gym.make("PongNoFrameskip-v4")
             env = ScaledFloatFrame(wrap_dqn(env))
         elif game == 'frozen':
             from gym.envs.toy_text import FrozenLakeEnv
+            from wrappers import OneHotWrapper
             env = FrozenLakeEnv(desc=MAP, is_slippery=False)
             env = gym.wrappers.TimeLimit(env, max_episode_steps=200)
             env = OneHotWrapper(env)
         elif game == 'cartpole':
             env = gym.make("CartPole-v0")
+        elif game == 'doom':
+            from ppaquette_gym_doom.wrappers import SetPlayingMode, SetResolution, ToDiscrete
+            from wrappers import NoNegativeRewardEnv, BufferedObsEnv
+            env = gym.make('ppaquette/DoomMyWayHome-v0')
+            modewrapper = SetPlayingMode('algo')
+            obwrapper = SetResolution('160x120')
+            acwrapper = ToDiscrete('minimal')
+            env = modewrapper(obwrapper(acwrapper(env)))
+
+            if record:
+                env = gym.wrappers.Monitor(env, outdir, force=True)
+            fshape = (42, 42)
+
+            env.seed(None)
+            env = NoNegativeRewardEnv(env)
+            env = BufferedObsEnv(env, skip=1, shape=fshape)
         else:
-            raise NotImplementedError("Game not recognized. Try pong / frozen / cartpole.")
+            raise NotImplementedError("Game not recognized. Try pong / frozen / cartpole / doom.")
+
         self.env = env
 
     def get_env(self):
@@ -71,6 +72,8 @@ class EnvironmentCreator(object):
             goal = 0.99
         elif self.game == 'cartpole':
             goal = 199.0
+        elif self.game == 'doom':
+            goal = 0.99
         else:
             raise NotImplementedError("Game not recognized. Try pong / frozen / cartpole.")
 
