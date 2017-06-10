@@ -15,15 +15,15 @@ fi
 
 echo "Logging in $LOGDIR"
 mkdir $LOGDIR
-cp run_pong.sh "$LOGDIR/run_pong.sh"
+cp run_doom.sh "$LOGDIR/run_doom.sh"
 
 
 python train.py --logdir $LOGDIR\
-    --game "pong"\
+    --game "doom"\
     --gamma 0.99\
     --learning_rate 0.0001\
-    --max_timesteps 2000000\
-    --buffer_size 10000\
+    --max_timesteps 5000000\
+    --buffer_size 50000\
     --initial_epsilon 1.0\
     --exploration_fraction 0.1\
     --final_epsilon 0.01\
