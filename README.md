@@ -29,9 +29,14 @@
 
 
 
-## TODO
+## TODO: interesting experiments
 - add optimism in Q network
   - initialize last bias to 1? to 1 / (1 - gamma) ?
 - change the way we apply the intrinsic memory
   - during training vs. at play time
   - compare both results
+- do we need epsilon greedy exploration with curiosity?
+  - we could tend to say that we don't need it
+  - but always good to have some randomness
+  - without randomness the agent can get stuck in a wall forever
+  - but with curiosity, can we reduce the initial epsilon / decrease it quicker ?
