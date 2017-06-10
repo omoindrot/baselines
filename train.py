@@ -12,6 +12,7 @@ from baselines import logger
 from baselines.deepq.replay_buffer import ReplayBuffer
 from baselines.common.schedules import LinearSchedule
 from environments import EnvironmentCreator
+from models import MLP, CNN_to_MLP
 
 
 parser = argparse.ArgumentParser()
@@ -112,7 +113,8 @@ def minimize_with_clipping(optimizer, loss, var_list, grad_norm_clipping=10.0):
     return optimizer.apply_gradients(clipped_grads_and_vars)
 
 
-def main():
+#def main():
+if True:
     tf.reset_default_graph()
     # Create the environment
     env_creator = EnvironmentCreator(args.game)
@@ -130,11 +132,8 @@ def main():
     # -------------------------------------
     # Model: gets actions with input states
     model = MLP([])
-    def q_func(inputs, num_actions, reuse=False, scope="q_values"):
-        # TODO: intialize the bias optimistically?
-        return tf.layers.dense(inputs, num_actions, reuse=reuse, name=scope)
     # q_values has shape (None, num_actions) and contains q(s, a) for the input batch of states
-    q_values = q_func(obs_placeholder, num_actions, scope="q_values")
+    q_values = model.q_function(obs_placeholder, num_actions, scope="q_values")
     deterministic_actions = tf.argmax(q_values, axis=1)
 
     random_actions = tf.random_uniform([dynamic_batch_size], minval=0, maxval=num_actions,
@@ -158,16 +157,16 @@ def main():
     done_mask = tf.placeholder(tf.float32, [None], name="done_mask")
 
     # q network evaluation
-    q_states = q_func(states, num_actions, reuse=True, scope="q_values")
+    q_states = model.q_function(states, num_actions, reuse=True, scope="q_values")
 
-    target_q_values = q_func(next_states, num_actions, scope="target_q_values")
+    target_q_values = model.q_function(next_states, num_actions, scope="target_q_values")
 
     # q(s,a) which were selected
     # TODO: use tf.gather_nd(q_states, tf.stack((tf.range(q_states.shape[0]), actions), 1) ?
     q_states_actions = tf.reduce_sum(q_states * tf.one_hot(actions, num_actions), 1)
 
     # Double q learning
-    q_tp1_online = q_func(next_states, num_actions, reuse=True, scope="q_values")
+    q_tp1_online = model.q_function(next_states, num_actions, reuse=True, scope="q_values")
     q_tp1_best_using_online_net = tf.arg_max(q_tp1_online, 1)
     q_next_states = tf.reduce_sum(target_q_values * tf.one_hot(q_tp1_best_using_online_net,
                                                                num_actions),
@@ -229,9 +228,9 @@ def main():
 
     optimizer = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
     q_network_vars = tf.contrib.framework.get_variables('q_values')
+    print(q_network_vars)
     target_q_network_vars = tf.contrib.framework.get_variables('target_q_values')
-    assert len(q_network_vars) == 2
-    assert len(target_q_network_vars) == 2
+
     # TODO: gradient clipping
     train_op = minimize_with_clipping(optimizer, loss, q_network_vars, args.grad_norm_clipping)
 
