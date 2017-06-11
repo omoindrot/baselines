@@ -16,6 +16,31 @@ from environments import EnvironmentCreator
 from models import MLP, CNNtoMLP, DoomModel, PongModel
 
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--logdir', type=str, default="log", help="Directory for Tensorboard / logging")
+parser.add_argument('--game', type=str, default="frozen", help="Game to play.")
+parser.add_argument('--gamma', type=float, default=0.99, help="Gamma for the agent")
+parser.add_argument('--learning_rate', type=float, default=1e-3, help="learning rate")
+parser.add_argument('--max_timesteps', type=int, default=100000, help="Total number of timesteps")
+parser.add_argument('--buffer_size', type=int, default=5000, help="Buffer size for replay memory")
+parser.add_argument('--initial_epsilon', type=float, default=1.0, help="Initial epsilon")
+parser.add_argument('--exploration_fraction', type=float, default=0.2, help="Time spent exploring")
+parser.add_argument('--final_epsilon', type=float, default=0.02, help="Final epsilon")
+parser.add_argument('--train_freq', type=int, default=1, help="Train every train_freq steps")
+parser.add_argument('--batch_size', type=int, default=32, help="Batch size for training")
+parser.add_argument('--print_freq', type=int, default=1, help="Print every print_freq")
+parser.add_argument('--learning_starts', type=int, default=1000, help="Start training")
+parser.add_argument('--target_network_update_freq', type=int, default=500, help="Update target net")
+parser.add_argument('--grad_norm_clipping', type=float, default=10.0, help="Clip gradients")
+parser.add_argument('--visualize', action='store_true', help="Render environment")
+parser.add_argument('--record', action='store_true', help="Record videos of the game")
+parser.add_argument('--curiosity', action='store_true', help="Activate curiosity module")
+parser.add_argument('--hidden_phi', type=int, default=16, help="Hidden dimension for phi")
+parser.add_argument('--eta', type=float, default=0.01, help="Coefficient for intrinsic reward")
+
+args = parser.parse_args()
+
+
 def eval_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholder,
                output_actions, sess, samples=1000):
     """
@@ -94,7 +119,7 @@ def minimize_with_clipping(optimizer, loss, var_list, grad_norm_clipping=10.0):
 def main(args):
     tf.reset_default_graph()
     # Create the environment
-    env_creator = EnvironmentCreator(args.game, args.record, os.path.join(args.logdir, "record"), args.size)
+    env_creator = EnvironmentCreator(args.game, args.record, os.path.join(args.logdir, "record"))
     env = env_creator.get_env()
 
     num_actions = env.action_space.n
@@ -270,7 +295,6 @@ def main(args):
         # Save model
         # TODO: save model and stuff
         #saved_mean_reward = None
-        first_reward = -1
 
         for it in range(args.max_timesteps):
             if env_creator.callback(it, episode_rewards):
@@ -291,10 +315,6 @@ def main(args):
             # TODO: remove replay buffer for curiosity
             replay_buffer.add(obs, action, rew, new_obs, float(done))
             obs = new_obs
-
-            if first_reward < 0 and rew > 0:
-                first_reward = it
-
 
             episode_rewards[-1] += rew
             if done:
@@ -366,48 +386,7 @@ def main(args):
         eval_model(env, obs_placeholder, epsilon_placeholder, stochastic_placeholder,
                    output_actions, sess, samples=100)
 
-    return first_reward
-
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--logdir', type=str, default="log", help="Directory for Tensorboard / logging")
-    parser.add_argument('--game', type=str, default="frozen", help="Game to play.")
-    parser.add_argument('--size', type=int, default=8, help="size of the map for Frozen Lake")
-    parser.add_argument('--gamma', type=float, default=0.99, help="Gamma for the agent")
-    parser.add_argument('--learning_rate', type=float, default=1e-3, help="learning rate")
-    parser.add_argument('--max_timesteps', type=int, default=100000, help="Total number of timesteps")
-    parser.add_argument('--buffer_size', type=int, default=5000, help="Buffer size for replay memory")
-    parser.add_argument('--initial_epsilon', type=float, default=1.0, help="Initial epsilon")
-    parser.add_argument('--exploration_fraction', type=float, default=0.2, help="Time spent exploring")
-    parser.add_argument('--final_epsilon', type=float, default=0.02, help="Final epsilon")
-    parser.add_argument('--train_freq', type=int, default=1, help="Train every train_freq steps")
-    parser.add_argument('--batch_size', type=int, default=32, help="Batch size for training")
-    parser.add_argument('--print_freq', type=int, default=1, help="Print every print_freq")
-    parser.add_argument('--learning_starts', type=int, default=1000, help="Start training")
-    parser.add_argument('--target_network_update_freq', type=int, default=500, help="Update target net")
-    parser.add_argument('--grad_norm_clipping', type=float, default=10.0, help="Clip gradients")
-    parser.add_argument('--visualize', action='store_true', help="Render environment")
-    parser.add_argument('--record', action='store_true', help="Record videos of the game")
-    parser.add_argument('--curiosity', action='store_true', help="Activate curiosity module")
-    parser.add_argument('--hidden_phi', type=int, default=16, help="Hidden dimension for phi")
-    parser.add_argument('--eta', type=float, default=0.01, help="Coefficient for intrinsic reward")
+    main(args)
 
-    args = parser.parse_args()
-
-    size = [8,16,24,32]
-    nb_exp = 10
-    params = [True, False]
-    results = np.zeros((len(size),len(params), nb_exp))
-
-    for i,s in enumerate(size):
-        args.size = s
-        for j,c in enumerate(params):
-            args.curiosity = c
-            for k in nb_exp:
-                res = main(args)
-                results[i,j,k] = res
-
-    results = np.mean(results, axis=2)
-
-    np.savetxt("results_curiosity_vs_size",results)
