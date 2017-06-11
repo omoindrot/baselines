@@ -2,9 +2,26 @@
 """
 
 import gym
+import numpy as np
 
 from baselines.common.atari_wrappers_deprecated import wrap_dqn, ScaledFloatFrame
 
+def create_MAP(size, fraction_of_holes=0.1):
+    np.random.seed(19)
+    tab = np.random.binomial(n=1, p=fraction_of_holes, size=(size,size))
+    lake=[]
+    for i in range(size):
+        row = ""
+        for j in range(size):
+            if i == 0 and j == 0:
+                row += "S"
+            elif j == size-1 and i == size-1:
+                row += "G"
+            else:
+                row += "H" if tab[i,j] else "F"
+        lake.append(row)
+
+    return lake
 
 MAP = [
     "SFFFFFFF",
@@ -24,15 +41,16 @@ class EnvironmentCreator(object):
     ----------
     game: (string) Gives the game to play
     """
-    def __init__(self, game, record=False, outdir="records"):
+    def __init__(self, game, record=False, outdir="records", size=None):
         self.game = game
         if game == 'pong':
             env = gym.make("PongNoFrameskip-v4")
             env = ScaledFloatFrame(wrap_dqn(env))
         elif game == 'frozen':
+            assert(size is not None), "size of the lake can't be None"
             from gym.envs.toy_text import FrozenLakeEnv
             from wrappers import OneHotWrapper
-            env = FrozenLakeEnv(desc=MAP, is_slippery=False)
+            env = FrozenLakeEnv(desc=create_MAP(size), is_slippery=False)
             env = gym.wrappers.TimeLimit(env, max_episode_steps=200)
             env = OneHotWrapper(env)
         elif game == 'cartpole':
