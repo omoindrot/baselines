@@ -394,7 +394,7 @@ if __name__ == '__main__':
     parser.add_argument('--eta', type=float, default=0.01, help="Coefficient for intrinsic reward")
 
     args = parser.parse_args()
-
+    args.print_freq = 10000
     size = [8,16,24,32]
     nb_exp = 10
     params = [True, False]
@@ -404,7 +404,7 @@ if __name__ == '__main__':
         args.size = s
         for j,c in enumerate(params):
             args.curiosity = c
-            for k in nb_exp:
+            for k in range(nb_exp):
                 res = main(args)
                 results[i,j,k] = res
 
