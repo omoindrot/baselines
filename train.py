@@ -223,6 +223,7 @@ def main(args):
     update_target_q = tf.group(*update_target_q_ops)
 
     init_op = tf.global_variables_initializer()
+    merge_summary = tf.summary.merge_all()
 
     tf.get_default_graph().finalize()
 
@@ -241,8 +242,7 @@ def main(args):
     # Create the session
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
-
-    merge_summary = tf.summary.merge_all()
+   
 
     with tf.Session(config=config) as sess:
         sess.run(init_op)
