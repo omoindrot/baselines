@@ -410,4 +410,4 @@ if __name__ == '__main__':
 
     results = np.mean(results, axis=2)
 
-    np.savetxt("results_curiosity_vs_size",results)
+    np.savetxt("results_curiosity_vs_size.txt",results)
